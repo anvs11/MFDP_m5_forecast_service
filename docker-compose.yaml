@@ -1,0 +1,140 @@
+version: "3.8"
+
+services:
+  app:
+    build: ./app/
+    image: m5-forecast-api:latest
+    container_name: m5-forecast-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - m5-forecast-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+  ml_worker:
+    build: ./ml_worker/
+    image: m5-forecast-ml-worker:latest
+    container_name: m5-forecast-ml-worker
+    restart: unless-stopped
+
+    env_file:
+      - .env
+    volumes:
+      - ./ml_worker:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - m5-forecast-network
+
+  # Для масштабирования раскомментируйте этот блок
+  # или используйте: docker-compose up --scale ml_worker=3
+  # ml_worker_2:
+  #   build: ./ml_worker/
+  #   image: m5-forecast-ml-worker:latest
+  #   container_name: m5-forecast-ml-worker-2
+  #   restart: unless-stopped
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - ./ml_worker:/app
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+  #     rabbitmq:
+  #       condition: service_healthy
+  #   networks:
+  #     - m5-forecast-network
+  web:
+    image: nginx:latest
+    container_name: m5-forecast-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      app:
+        condition: service_healthy
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+    networks:
+      - m5-forecast-network
+
+  db:
+    image: postgres:16-alpine
+    container_name: m5-forecast-db
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    networks:
+      - m5-forecast-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $$POSTGRES_DB -U $$POSTGRES_USER"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13.1-management-alpine
+    container_name: m5-forecast-rabbitmq
+    hostname: rabbitmq
+    restart: unless-stopped
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASS}
+      - RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbit disk_free_limit 2147483648
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      - "15672:15672"  # Management UI
+      - "5672:5672"    # AMQP protocol
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+    networks:
+      - m5-forecast-network
+
+  webview:
+    build: ./webview/
+    image: m5-forecast-webview:latest
+    container_name: m5-forecast-webview
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./webview:/app
+    depends_on:
+      - app
+    networks:
+      - m5-forecast-network
+    command: streamlit run app.py --server.port=8501 --server.address=0.0.0.0
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+
+networks:
+  m5-forecast-network:
+    name: m5-forecast-network
+    driver: bridge
