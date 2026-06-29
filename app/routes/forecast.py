@@ -25,7 +25,6 @@ import logging
 import io
 import csv
 import json
-from typing import Union
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +35,7 @@ class ForecastCreateRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     model_id: str
-    store_id: Union[str, List[str]]
+    store_id: str
     dept_ids: List[str]
     horizon_days: int = 28
     alpha: float = 0.2
@@ -64,15 +63,10 @@ def run_forecast(
     Запустить задачу прогноза.
     """
     try:
-        if isinstance(request.store_id, list):
-            store_id_str = ",".join(request.store_id)
-        else:
-            store_id_str = request.store_id
-
         forecast = create_forecast_task(
             user_id=current_user.id,
             model_id=request.model_id,
-            store_id=store_id_str,
+            store_id=request.store_id,
             dept_ids=request.dept_ids,
             horizon_days=request.horizon_days,
             alpha=request.alpha,
@@ -198,7 +192,7 @@ class SummaryResponse(BaseModel):
 @forecast_router.get("/{forecast_id}/summary", response_model=SummaryResponse)
 def get_forecast_summary(
         forecast_id: int,
-        item_id: Optional[str] = None,  # ← Параметр для фильтрации
+        item_id: Optional[str] = None,
         current_user: User = Depends(get_current_user_universal),
         session: Session = Depends(get_session)
 ):
@@ -359,11 +353,6 @@ def get_forecast_scenarios(
     CALENDAR_PATH = '/app/data/calendar.csv'
     PRICES_PATH = '/app/data/sell_prices.csv'
 
-    if ',' in forecast.store_id:
-        store_ids = forecast.store_id.split(',')
-    else:
-        store_ids = forecast.store_id
-
     scenario_results = {}
     for name, alpha in scenarios.items():
         logger.info(f"Running scenario {name} (alpha={alpha})...")
@@ -371,7 +360,7 @@ def get_forecast_scenarios(
             sales_path=SALES_PATH,
             calendar_path=CALENDAR_PATH,
             prices_path=PRICES_PATH,
-            store_id=store_ids,
+            store_id=forecast.store_id,
             dept_ids=dept_ids,
             horizon_days=forecast.horizon_days,
             alpha=alpha

@@ -14,26 +14,23 @@ logger = logging.getLogger(__name__)
 
 
 class DataPreparator:
-    def __init__(self, store_id=None, state_id=None, cat_ids=['FOODS_1', 'FOODS_2']):
+    def __init__(self, store_id=None, state_id=None, dept_ids: List[str] = None):
         """
         Инициализация подготовщика данных
         """
         self.store_id = store_id
         self.state_id = state_id
-        self.cat_ids = cat_ids
+        self.dept_ids = dept_ids or ['FOODS_1', 'FOODS_2']
 
     def load_and_prepare(self, sales_path, calendar_path, prices_path):
         sales = pd.read_csv(sales_path)
         calendar = pd.read_csv(calendar_path)
         prices = pd.read_csv(prices_path)
 
-        subset_sales = sales[sales['cat_id'].isin(self.cat_ids)].copy()
+        subset_sales = sales[sales['dept_id'].isin(self.dept_ids)].copy()
 
         if self.store_id:
-            if isinstance(self.store_id, list):
-                subset_sales = subset_sales[subset_sales['store_id'].isin(self.store_id)]
-            else:
-                subset_sales = subset_sales[subset_sales['store_id'] == self.store_id]
+            subset_sales = subset_sales[subset_sales['store_id'] == self.store_id]
         elif self.state_id:
             subset_sales = subset_sales[subset_sales['state_id'] == self.state_id]
 
@@ -285,41 +282,46 @@ def run_forecast(
         sales_path: str,
         calendar_path: str,
         prices_path: str,
-        store_id: Union[str, List[str]],  # ← Изменено
+        store_id: str,
         dept_ids: List[str],
         horizon_days: int,
         alpha: float
 ) -> List[Dict]:
     """
     Точка входа для воркера.
-    Поддерживает один магазин или список магазинов.
+    store_id: ID одного магазина (например, 'CA_1')
     """
-    if isinstance(store_id, str):
-        if ',' in store_id:
-            store_ids = [s.strip() for s in store_id.split(',')]
-        else:
-            store_ids = [store_id]
-    else:
-        store_ids = store_id
-
-    logger.info(f"Starting forecast: stores={store_ids}, depts={dept_ids}, horizon={horizon_days}, alpha={alpha}")
+    logger.info(f"Starting forecast: store={store_id}, depts={dept_ids}, horizon={horizon_days}, alpha={alpha}")
 
     preparator = DataPreparator(
-        store_id=store_ids if len(store_ids) > 1 else store_ids[0],
-        cat_ids=dept_ids
+        store_id=store_id,
+        dept_ids=dept_ids
     )
-
     df = preparator.load_and_prepare(sales_path, calendar_path, prices_path)
 
     logger.info(f"DataPreparator: Dataset prepared. Shape: {df.shape}")
 
+    if df.empty:
+        logger.error(
+            f"Dataset is empty! Store: {store_id}, Depts: {dept_ids}")
+        return []
+
     forecaster = M5Forecaster()
 
-    max_d = df['d_num'].max()
+    df = forecaster.pipeline.transform(df)
+    logger.info(f"FeaturePipeline applied. Shape: {df.shape}")
+
+    max_d = int(df['d_num'].max())
     forecast_d_nums = list(range(max_d - horizon_days + 1, max_d + 1))
     df_forecast = df[df['d_num'].isin(forecast_d_nums)].copy()
 
-    X = df_forecast[forecaster.FEATURES]
+    X = df_forecast[forecaster.FEATURES].copy()
+
+    for col in forecaster.CATEGORICAL_FEATURES:
+        if col in X.columns:
+            X[col] = X[col].astype('category')
+
+    logger.info(f"Predicting with {len(X)} rows")
 
     P_positive = forecaster.clf.predict_proba(X)[:, 1]
     reg = forecaster.regs[alpha]
