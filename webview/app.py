@@ -399,7 +399,6 @@ def create_forecast_page():
     with st.form("forecast_form"):
         st.subheader("Параметры прогноза")
 
-        # Только один магазин
         store_id = st.selectbox(
             " Выберите магазин",
             ["CA_1", "CA_2", "CA_3", "CA_4"],

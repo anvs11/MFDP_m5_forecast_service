@@ -15,18 +15,23 @@ from models.ml_model import MLModel
 from models.forecast import Forecast, TaskStatus
 from models.forecast_item import ForecastItem
 from models.input_file import InputFile
-from forecaster import run_forecast
 from datetime import datetime
 
+from model_config import (
+    DATA_PATHS,
+    MODEL_OUTPUT_PATH
+)
+
+from forecaster import run_forecast
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
-SALES_PATH = 'data/sales_train_evaluation.csv'
-CALENDAR_PATH = 'data/calendar.csv'
-PRICES_PATH = 'data/sell_prices.csv'
+SALES_PATH = DATA_PATHS['sales']
+CALENDAR_PATH = DATA_PATHS['calendar']
+PRICES_PATH = DATA_PATHS['prices']
 
 sync_engine = create_engine(
     f'postgresql+psycopg://{settings.DB_USER}:{settings.DB_PASS}@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}',
@@ -59,6 +64,7 @@ def callback(ch, method, properties, body):
             session.commit()
 
         logger.info(f"Running forecast for task {forecast_id}...")
+
         forecast_items = run_forecast(
             sales_path=SALES_PATH,
             calendar_path=CALENDAR_PATH,
@@ -66,7 +72,8 @@ def callback(ch, method, properties, body):
             store_id=store_id,
             dept_ids=dept_ids,
             horizon_days=horizon_days,
-            alpha=alpha
+            alpha=alpha,
+            model_path=MODEL_OUTPUT_PATH
         )
 
         with Session(sync_engine) as session:
@@ -136,6 +143,8 @@ def main():
     channel.basic_consume(queue=settings.RABBITMQ_QUEUE, on_message_callback=callback)
 
     logger.info(f"ML Worker started. Waiting for messages on queue: {settings.RABBITMQ_QUEUE}")
+    logger.info(f"Model path: {MODEL_OUTPUT_PATH}")
+    logger.info(f"Data paths: {DATA_PATHS}")
 
     try:
         channel.start_consuming()

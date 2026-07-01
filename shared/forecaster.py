@@ -66,8 +66,14 @@ class DataPreparator:
         df = df.merge(prices_subset, on=['store_id', 'item_id', 'wm_yr_wk'], how='left')
         del prices_subset
 
+        df["price_missing"] = df["sell_price"].isna().astype(int)
+
         df["sell_price"] = df.groupby(["store_id", "item_id"])["sell_price"].ffill()
-        df["sell_price"] = df.groupby(["store_id", "item_id"])["sell_price"].bfill()
+
+        median_by_store_dept = df.groupby(["store_id", "dept_id"])["sell_price"].transform("median")
+        df["sell_price"] = df["sell_price"].fillna(median_by_store_dept)
+
+        df["sell_price"] = df["sell_price"].fillna(0)
 
         df['d_num'] = df['d'].str.replace('d_', '').astype(int)
         df = df.sort_values(['item_id', 'd_num']).reset_index(drop=True)
@@ -174,17 +180,17 @@ class FeaturePipeline(BaseEstimator, TransformerMixin):
         return self.transform(df)
 
 class M5Forecaster:
-    FEATURES = [
+    DEFAULT_FEATURES = [
         'lag_7', 'lag_14', 'lag_21', 'lag_28',
         'rolling_mean_7', 'rolling_std_7',
-        'sell_price', 'is_active',
+        'sell_price', 'price_missing', 'is_active',
         'snap_high', 'snap_medium', 'snap_low',
         'is_top_event',
         'store_id',
         'wday', 'demand_level', 'price_bin'
     ]
 
-    CATEGORICAL_FEATURES = ['store_id', 'wday', 'demand_level', 'price_bin']  # ← ДОБАВЛЕНО
+    DEFAULT_CATEGORICAL_FEATURES = ['store_id', 'wday', 'demand_level', 'price_bin']
 
     def __init__(self, model_path: str = None):
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -202,7 +208,11 @@ class M5Forecaster:
         self.regs = model_data['regs']
         self.pipeline = model_data['pipeline']
 
+        self.features = model_data.get('features', self.DEFAULT_FEATURES)
+        self.categorical_features = model_data.get('categorical_features', self.DEFAULT_CATEGORICAL_FEATURES)
+
         logger.info(f"Model loaded. Available alphas: {list(self.regs.keys())}")
+        logger.info(f"Features count: {len(self.features)}")
 
     def predict(
             self,
@@ -224,7 +234,7 @@ class M5Forecaster:
         logger.info(f"Extracted state_id: {state_id}")
 
         # 1. Загружаем данные для конкретного магазина
-        preparator = DataPreparator(store_id=store_id, cat_ids=dept_ids)
+        preparator = DataPreparator(store_id=store_id, dept_ids=dept_ids)
         df = preparator.load_and_prepare(sales_path, calendar_path, prices_path)
 
         # 2. Применяем FeaturePipeline
@@ -236,7 +246,11 @@ class M5Forecaster:
         df_forecast = df_feat[df_feat['d_num'].isin(forecast_d_nums)].copy()
 
         # 4. Предсказания
-        X = df_forecast[self.FEATURES]
+        X = df_forecast[self.features].copy()
+
+        for col in self.categorical_features:
+            if col in X.columns:
+                X[col] = X[col].astype('category')
 
         P_positive = self.clf.predict_proba(X)[:, 1]
         reg = self.regs[alpha]
@@ -285,7 +299,8 @@ def run_forecast(
         store_id: str,
         dept_ids: List[str],
         horizon_days: int,
-        alpha: float
+        alpha: float,
+        model_path: str = None
 ) -> List[Dict]:
     """
     Точка входа для воркера.
@@ -306,7 +321,7 @@ def run_forecast(
             f"Dataset is empty! Store: {store_id}, Depts: {dept_ids}")
         return []
 
-    forecaster = M5Forecaster()
+    forecaster = M5Forecaster(model_path=model_path)
 
     df = forecaster.pipeline.transform(df)
     logger.info(f"FeaturePipeline applied. Shape: {df.shape}")
@@ -315,9 +330,9 @@ def run_forecast(
     forecast_d_nums = list(range(max_d - horizon_days + 1, max_d + 1))
     df_forecast = df[df['d_num'].isin(forecast_d_nums)].copy()
 
-    X = df_forecast[forecaster.FEATURES].copy()
+    X = df_forecast[forecaster.features].copy()
 
-    for col in forecaster.CATEGORICAL_FEATURES:
+    for col in forecaster.categorical_features:
         if col in X.columns:
             X[col] = X[col].astype('category')
 
